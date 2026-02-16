@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
+import { extractLocationsWithLLM } from '@/lib/gemini';
+import { geocodeWithGoogle, geocodeWithNominatim, GeocodingResult } from '@/lib/nominatim';
+import { haversineDistance } from '@/lib/distance';
 
 // Types
 export interface ExtractedLocation {
@@ -17,186 +19,103 @@ export interface ExtractionResponse {
   locations: ExtractedLocation[];
   input_length: number;
   processing_time_ms: number;
+  model_used?: string;
   error?: string;
 }
 
-// Initialize Anthropic client
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const DISTANCE_THRESHOLD_KM = 10;
 
-// Geocoding with Nominatim (OpenStreetMap) - free, no API key
-async function geocodeWithNominatim(query: string): Promise<{ lat: number; lon: number } | null> {
-  try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
-      {
-        headers: {
-          'User-Agent': 'GeoText-API/1.0 (https://github.com/geotext-api)',
-        },
-      }
-    );
-    const data = await response.json();
-    if (data && data.length > 0) {
-      return {
-        lat: parseFloat(data[0].lat),
-        lon: parseFloat(data[0].lon),
-      };
-    }
-    return null;
-  } catch (error) {
-    console.error('Nominatim geocoding error:', error);
-    return null;
-  }
-}
-
-// Geocoding with Google Maps API (if available)
-async function geocodeWithGoogle(query: string): Promise<{ lat: number; lon: number } | null> {
-  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) return null;
-
-  try {
-    const response = await fetch(
-      `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`
-    );
-    const data = await response.json();
-    if (data.status === 'OK' && data.results.length > 0) {
-      const location = data.results[0].geometry.location;
-      return {
-        lat: location.lat,
-        lon: location.lng,
-      };
-    }
-    return null;
-  } catch (error) {
-    console.error('Google geocoding error:', error);
-    return null;
-  }
-}
-
-// Multi-source geocoding with confidence scoring
+// Dual geocoding with Haversine-based confidence scoring
 async function geocodeLocation(
   name: string,
   llmCoords?: { lat: number; lon: number }
-): Promise<{ lat: number; lon: number; confidence: 'high' | 'medium' | 'low'; sources: string[] }> {
-  const sources: string[] = [];
-  const coords: { lat: number; lon: number }[] = [];
+): Promise<{
+  lat: number;
+  lon: number;
+  confidence: 'high' | 'medium' | 'low';
+  sources: string[];
+  agreement_distance_km?: number;
+}> {
+  // Geocode with both services in parallel
+  const [googleResult, nominatimResult] = await Promise.all([
+    geocodeWithGoogle(name),
+    geocodeWithNominatim(name),
+  ]);
 
-  // Try LLM coordinates first
-  if (llmCoords && llmCoords.lat && llmCoords.lon) {
-    coords.push(llmCoords);
-    sources.push('llm');
-  }
+  const geocodingSources: string[] = [];
+  const coords: GeocodingResult[] = [];
 
-  // Try Google Maps
-  const googleResult = await geocodeWithGoogle(name);
   if (googleResult) {
     coords.push(googleResult);
-    sources.push('google');
+    geocodingSources.push('google');
   }
-
-  // Try Nominatim (OpenStreetMap)
-  const nominatimResult = await geocodeWithNominatim(name);
   if (nominatimResult) {
     coords.push(nominatimResult);
-    sources.push('nominatim');
+    geocodingSources.push('nominatim');
   }
 
-  // Determine final coordinates and confidence
+  // Include LLM coordinates as a supplementary source
+  if (llmCoords && llmCoords.lat && llmCoords.lon) {
+    coords.push(llmCoords);
+    geocodingSources.push('llm');
+  }
+
   if (coords.length === 0) {
     return { lat: 0, lon: 0, confidence: 'low', sources: [] };
   }
 
-  // Calculate average coordinates
-  const avgLat = coords.reduce((sum, c) => sum + c.lat, 0) / coords.length;
-  const avgLon = coords.reduce((sum, c) => sum + c.lon, 0) / coords.length;
-
-  // Calculate confidence based on source agreement
+  // Dual geocoding confidence check using Haversine distance
   let confidence: 'high' | 'medium' | 'low' = 'low';
-  
-  if (sources.length >= 2) {
-    // Check if sources agree (within ~10km)
-    const maxDist = Math.max(
-      ...coords.map((c) =>
-        Math.sqrt(Math.pow(c.lat - avgLat, 2) + Math.pow(c.lon - avgLon, 2))
-      )
+  let agreementDistanceKm: number | undefined;
+  let finalLat: number;
+  let finalLon: number;
+
+  if (googleResult && nominatimResult) {
+    agreementDistanceKm = haversineDistance(
+      googleResult.lat,
+      googleResult.lon,
+      nominatimResult.lat,
+      nominatimResult.lon
     );
-    if (maxDist < 0.1) {
+
+    if (agreementDistanceKm < DISTANCE_THRESHOLD_KM) {
+      // Both services agree - high confidence, use average
       confidence = 'high';
-    } else if (maxDist < 0.5) {
+      finalLat = (googleResult.lat + nominatimResult.lat) / 2;
+      finalLon = (googleResult.lon + nominatimResult.lon) / 2;
+    } else {
+      // Services disagree - medium confidence, prefer Google (more accurate)
       confidence = 'medium';
+      finalLat = googleResult.lat;
+      finalLon = googleResult.lon;
     }
-  } else if (sources.includes('google') || sources.includes('nominatim')) {
+  } else if (googleResult) {
+    // Only Google succeeded
     confidence = 'medium';
+    finalLat = googleResult.lat;
+    finalLon = googleResult.lon;
+  } else if (nominatimResult) {
+    // Only Nominatim succeeded
+    confidence = 'medium';
+    finalLat = nominatimResult.lat;
+    finalLon = nominatimResult.lon;
+  } else {
+    // Only LLM coordinates available
+    confidence = 'low';
+    finalLat = coords[0].lat;
+    finalLon = coords[0].lon;
   }
 
   return {
-    lat: Math.round(avgLat * 1000000) / 1000000,
-    lon: Math.round(avgLon * 1000000) / 1000000,
+    lat: Math.round(finalLat * 1000000) / 1000000,
+    lon: Math.round(finalLon * 1000000) / 1000000,
     confidence,
-    sources,
+    sources: geocodingSources,
+    agreement_distance_km:
+      agreementDistanceKm !== undefined
+        ? Math.round(agreementDistanceKm * 100) / 100
+        : undefined,
   };
-}
-
-// Extract locations using Claude
-async function extractLocationsWithLLM(text: string): Promise<{
-  name: string;
-  description: string;
-  raw_mention: string;
-  llm_lat?: number;
-  llm_lon?: number;
-}[]> {
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 4096,
-    messages: [
-      {
-        role: 'user',
-        content: `Extract all geographic locations, points of interest, and destinations from the following text. For each location, provide:
-1. The canonical name of the location
-2. A brief description (1 sentence max)
-3. The exact text mention from the input
-4. If you're confident, provide approximate latitude and longitude
-
-Return ONLY valid JSON in this format (no markdown, no explanation):
-{
-  "locations": [
-    {
-      "name": "Great Barrier Reef",
-      "description": "World's largest coral reef system off the coast of Queensland, Australia",
-      "raw_mention": "the Great Barrier Reef",
-      "llm_lat": -18.2871,
-      "llm_lon": 147.6992
-    }
-  ]
-}
-
-If no locations are found, return: {"locations": []}
-
-TEXT TO ANALYZE:
-${text}`,
-      },
-    ],
-  });
-
-  try {
-    const content = response.content[0];
-    if (content.type !== 'text') {
-      return [];
-    }
-    
-    // Clean up response - remove markdown code blocks if present
-    let jsonStr = content.text.trim();
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```$/g, '').trim();
-    }
-    
-    const parsed = JSON.parse(jsonStr);
-    return parsed.locations || [];
-  } catch (error) {
-    console.error('Error parsing LLM response:', error);
-    return [];
-  }
 }
 
 export async function POST(request: NextRequest) {
@@ -232,10 +151,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Step 1: Extract locations with LLM
-    const llmLocations = await extractLocationsWithLLM(text);
+    // Stage 1: Extract locations with LLM (Gemini Flash → Haiku fallback)
+    const { locations: llmLocations, model_used } =
+      await extractLocationsWithLLM(text);
 
-    // Step 2: Geocode each location with multi-source verification
+    // Stage 2: Dual geocoding with Haversine-based confidence scoring
     const locations: ExtractedLocation[] = await Promise.all(
       llmLocations.map(async (loc) => {
         const geocoded = await geocodeLocation(
@@ -285,6 +205,7 @@ export async function POST(request: NextRequest) {
       locations: deduped,
       input_length: text.length,
       processing_time_ms: Date.now() - startTime,
+      model_used,
     } as ExtractionResponse);
   } catch (error) {
     console.error('Error processing request:', error);
@@ -305,8 +226,9 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   return NextResponse.json({
     name: 'GeoText API',
-    version: '1.0.0',
-    description: 'Extract and geocode locations from text using AI + multi-source verification',
+    version: '2.0.0',
+    description:
+      'Extract and geocode locations from text using staged AI validation + multi-source geocoding',
     endpoints: {
       'POST /api/extract-locations': {
         description: 'Extract locations from text',
@@ -316,14 +238,25 @@ export async function GET() {
           locations: 'ExtractedLocation[]',
           input_length: 'number',
           processing_time_ms: 'number',
+          model_used: 'string',
         },
       },
     },
-    confidence_levels: {
-      high: 'Multiple sources agree (within ~10km)',
-      medium: 'Single authoritative source or moderate agreement',
-      low: 'Only LLM estimate or no verification possible',
+    staged_validation: {
+      stage1_llm: 'Gemini 2.0 Flash (primary) → Claude Haiku 4.5 (fallback)',
+      stage2_geocoding: 'Google Maps + Nominatim dual validation',
+      stage3_confidence: 'Haversine distance-based agreement scoring',
     },
-    sources: ['llm (Claude)', 'google (Google Maps)', 'nominatim (OpenStreetMap)'],
+    confidence_levels: {
+      high: 'Google & Nominatim agree within 10km (Haversine)',
+      medium: 'Single geocoding source or services disagree',
+      low: 'Only LLM estimate or no geocoding available',
+    },
+    sources: [
+      'gemini-flash (Gemini 2.0 Flash)',
+      'claude-haiku (Claude Haiku 4.5)',
+      'google (Google Maps)',
+      'nominatim (OpenStreetMap)',
+    ],
   });
 }

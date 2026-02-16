@@ -1,440 +1,478 @@
 /**
  * GeoText API - Comprehensive Test Suite
- * Tests all scenarios for location extraction endpoint
+ * Tests all scenarios for location extraction endpoint with staged validation
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { POST } from '../route';
 import { NextRequest } from 'next/server';
 
-// Mock Anthropic SDK
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    messages: {
-      create: vi.fn()
-    }
-  }))
+// Mock our lib modules at the boundary
+const mockExtractLocationsWithLLM = vi.fn();
+const mockGeocodeWithGoogle = vi.fn();
+const mockGeocodeWithNominatim = vi.fn();
+
+vi.mock('@/lib/gemini', () => ({
+  extractLocationsWithLLM: (...args: unknown[]) =>
+    mockExtractLocationsWithLLM(...args),
 }));
 
-describe('/api/extract - Location Extraction API', () => {
+vi.mock('@/lib/nominatim', () => ({
+  geocodeWithGoogle: (...args: unknown[]) => mockGeocodeWithGoogle(...args),
+  geocodeWithNominatim: (...args: unknown[]) =>
+    mockGeocodeWithNominatim(...args),
+}));
+
+// Import the handler after mocks are set up
+import { POST } from '../../../../src/app/api/extract-locations/route';
+
+describe('/api/extract-locations - Staged Validation API', () => {
   beforeEach(() => {
-    // Reset mocks before each test
     vi.clearAllMocks();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    process.env.GOOGLE_MAPS_API_KEY = 'test-key';
+    process.env.GOOGLE_GEMINI_API_KEY = 'test-key';
   });
 
-  describe('✅ Success Cases - Single Location', () => {
-    it('should extract single famous landmark (Eiffel Tower)', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'Visit the Eiffel Tower in Paris' }),
-        headers: { 'Content-Type': 'application/json' }
-      });
+  // -- Input validation --
 
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toHaveLength(1);
-      expect(data.locations[0]).toMatchObject({
-        name: expect.stringMatching(/Eiffel Tower/i),
-        confidence: expect.stringMatching(/high|medium/),
-        coordinates: {
-          lat: expect.any(Number),
-          lon: expect.any(Number)
-        }
-      });
-    });
-
-    it('should extract single city (Tokyo)', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'I want to travel to Tokyo next summer' }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toHaveLength(1);
-      expect(data.locations[0].name).toMatch(/Tokyo/i);
-      expect(data.locations[0].coordinates.lat).toBeCloseTo(35.6762, 1);
-      expect(data.locations[0].coordinates.lon).toBeCloseTo(139.6503, 1);
-    });
-
-    it('should extract address (street level)', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          text: 'Meet me at 1600 Pennsylvania Avenue NW, Washington, DC'
-        }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toHaveLength(1);
-      expect(data.locations[0].name).toMatch(/Pennsylvania Avenue|White House/i);
-    });
-  });
-
-  describe('✅ Success Cases - Multiple Locations', () => {
-    it('should extract 2 locations from simple text', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          text: 'Visit the Eiffel Tower in Paris and Big Ben in London'
-        }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toHaveLength(2);
-      expect(data.locations.map((l: any) => l.name)).toEqual(
-        expect.arrayContaining([
-          expect.stringMatching(/Eiffel Tower|Paris/i),
-          expect.stringMatching(/Big Ben|London/i)
-        ])
-      );
-    });
-
-    it('should extract 5+ locations from travel itinerary', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          text: `Day 1: Arrive in Rome and visit the Colosseum
-Day 2: Take the train to Florence and see the Duomo
-Day 3: Continue to Venice and explore St. Mark's Square
-Day 4: Head to Milan for shopping
-Day 5: Cross the border to Zurich, Switzerland`
-        }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations.length).toBeGreaterThanOrEqual(5);
-      
-      const locationNames = data.locations.map((l: any) => l.name.toLowerCase());
-      expect(locationNames.some((n: string) => n.includes('rome') || n.includes('colosseum'))).toBe(true);
-      expect(locationNames.some((n: string) => n.includes('florence') || n.includes('duomo'))).toBe(true);
-      expect(locationNames.some((n: string) => n.includes('venice'))).toBe(true);
-      expect(locationNames.some((n: string) => n.includes('milan'))).toBe(true);
-      expect(locationNames.some((n: string) => n.includes('zurich'))).toBe(true);
-    });
-
-    it('should handle mixed landmarks + cities', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          text: 'See the Statue of Liberty, then fly to Los Angeles, visit Disneyland, and end in San Francisco at the Golden Gate Bridge'
-        }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations.length).toBeGreaterThanOrEqual(4);
-    });
-  });
-
-  describe('✅ Success Cases - International & Multilingual', () => {
-    it('should extract German city names', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          text: 'Ich reise nach München, dann nach Berlin und schließlich nach Hamburg'
-        }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations.length).toBeGreaterThanOrEqual(3);
-    });
-
-    it('should extract Asian locations', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          text: 'Trip to Bangkok, Seoul, and Shanghai'
-        }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toHaveLength(3);
-    });
-
-    it('should extract Middle Eastern locations', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          text: 'Business trip: Dubai, Tel Aviv, and Istanbul'
-        }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toHaveLength(3);
-    });
-  });
-
-  describe('✅ Edge Cases - No Locations', () => {
-    it('should return empty array when no locations mentioned', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          text: 'I love reading books and playing piano'
-        }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toEqual([]);
-    });
-
-    it('should handle empty text', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: '' }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toEqual([]);
-    });
-
-    it('should handle whitespace-only text', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: '   \n\n   \t   ' }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toEqual([]);
-    });
-  });
-
-  describe('✅ Edge Cases - Ambiguous Locations', () => {
-    it('should handle "Paris" (could be Paris, France or Paris, Texas)', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'Going to Paris next month' }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toHaveLength(1);
-      // Should default to Paris, France (more famous)
-      expect(data.locations[0].coordinates.lat).toBeCloseTo(48.8566, 1);
-    });
-
-    it('should handle common city names (Springfield, Portland, etc.)', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'Visit Portland' }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations).toHaveLength(1);
-      // Should pick most well-known Portland (Oregon or Maine)
-      expect(data.locations[0].confidence).toBe('medium');
-    });
-  });
-
-  describe('✅ Edge Cases - Very Long Text', () => {
-    it('should handle 1000+ word text with many locations', async () => {
-      const longText = `
-        ${'Lorem ipsum dolor sit amet. '.repeat(100)}
-        Visit Paris, London, Berlin, Rome, Madrid, Barcelona, Vienna, Prague, Amsterdam, Brussels.
-        ${'More filler text. '.repeat(100)}
-        Then continue to Tokyo, Seoul, Beijing, Bangkok, Singapore, Mumbai, Dubai, Istanbul.
-        ${'Even more text. '.repeat(100)}
-      `;
-
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: longText }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
-      expect(response.status).toBe(200);
-      expect(data.locations.length).toBeGreaterThanOrEqual(10);
-    });
-  });
-
-  describe('❌ Error Handling - Input Validation', () => {
+  describe('Input validation', () => {
     it('should return 400 if text field is missing', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ notText: 'invalid' }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ notText: 'invalid' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
       const response = await POST(request);
       const data = await response.json();
-
-      expect(response.status).toBe(400);
-      expect(data.error).toBeDefined();
-    });
-
-    it('should return 400 if request body is invalid JSON', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: 'not json',
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const response = await POST(request);
-      const data = await response.json();
-
       expect(response.status).toBe(400);
       expect(data.error).toBeDefined();
     });
 
     it('should return 400 if text is not a string', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 12345 }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 12345 }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
       const response = await POST(request);
       const data = await response.json();
-
       expect(response.status).toBe(400);
       expect(data.error).toBeDefined();
     });
-  });
 
-  describe('❌ Error Handling - Missing API Keys', () => {
-    it('should return 500 if ANTHROPIC_API_KEY is missing', async () => {
-      const originalKey = process.env.ANTHROPIC_API_KEY;
-      delete process.env.ANTHROPIC_API_KEY;
-
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'Visit Paris' }),
-        headers: { 'Content-Type': 'application/json' }
-      });
-
+    it('should return 400 if text exceeds max length', async () => {
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'x'.repeat(100001) }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
       const response = await POST(request);
       const data = await response.json();
-
-      expect(response.status).toBe(500);
-      expect(data.error).toMatch(/API key/i);
-
-      // Restore
-      process.env.ANTHROPIC_API_KEY = originalKey;
+      expect(response.status).toBe(400);
+      expect(data.error).toMatch(/100,000/);
     });
   });
 
-  describe('✅ Response Format Validation', () => {
-    it('should return valid response structure', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'Visit Paris' }),
-        headers: { 'Content-Type': 'application/json' }
+  // -- Gemini Flash extraction --
+
+  describe('Gemini Flash extraction (primary)', () => {
+    it('should extract locations using Gemini Flash', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'Eiffel Tower',
+            description: 'Iconic iron lattice tower in Paris',
+            raw_mention: 'the Eiffel Tower',
+            llm_lat: 48.8584,
+            llm_lon: 2.2945,
+          },
+        ],
+        model_used: 'gemini-2.0-flash',
+      });
+      mockGeocodeWithGoogle.mockResolvedValue({ lat: 48.8584, lon: 2.2945 });
+      mockGeocodeWithNominatim.mockResolvedValue({
+        lat: 48.8583,
+        lon: 2.2944,
       });
 
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'Visit the Eiffel Tower in Paris' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
       const response = await POST(request);
       const data = await response.json();
 
       expect(response.status).toBe(200);
-      expect(data).toHaveProperty('locations');
-      expect(Array.isArray(data.locations)).toBe(true);
-      
-      if (data.locations.length > 0) {
-        const location = data.locations[0];
-        expect(location).toHaveProperty('name');
-        expect(location).toHaveProperty('confidence');
-        expect(location).toHaveProperty('coordinates');
-        expect(location.coordinates).toHaveProperty('lat');
-        expect(location.coordinates).toHaveProperty('lon');
-        expect(['high', 'medium', 'low']).toContain(location.confidence);
-        expect(typeof location.coordinates.lat).toBe('number');
-        expect(typeof location.coordinates.lon).toBe('number');
-      }
+      expect(data.success).toBe(true);
+      expect(data.locations).toHaveLength(1);
+      expect(data.locations[0].name).toBe('Eiffel Tower');
+      expect(data.model_used).toBe('gemini-2.0-flash');
     });
 
-    it('should set correct Content-Type header', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'Visit Paris' }),
-        headers: { 'Content-Type': 'application/json' }
+    it('should return empty locations for text with no places', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [],
+        model_used: 'gemini-2.0-flash',
       });
 
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            text: 'I love reading books and playing piano',
+          }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
       const response = await POST(request);
+      const data = await response.json();
 
-      expect(response.headers.get('Content-Type')).toContain('application/json');
+      expect(response.status).toBe(200);
+      expect(data.locations).toEqual([]);
+      expect(data.model_used).toBe('gemini-2.0-flash');
     });
   });
 
-  describe('✅ Confidence Scoring', () => {
-    it('should assign "high" confidence to famous landmarks', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'Visit the Eiffel Tower' }),
-        headers: { 'Content-Type': 'application/json' }
+  // -- Haiku fallback --
+
+  describe('Haiku fallback', () => {
+    it('should report model used as claude-haiku when Gemini fails', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'Tokyo',
+            description: 'Capital city of Japan',
+            raw_mention: 'Tokyo',
+            llm_lat: 35.6762,
+            llm_lon: 139.6503,
+          },
+        ],
+        model_used: 'claude-haiku-4.5',
+      });
+      mockGeocodeWithGoogle.mockResolvedValue({ lat: 35.6762, lon: 139.6503 });
+      mockGeocodeWithNominatim.mockResolvedValue({
+        lat: 35.6764,
+        lon: 139.65,
       });
 
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'I want to travel to Tokyo' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.locations).toHaveLength(1);
+      expect(data.locations[0].name).toBe('Tokyo');
+      expect(data.model_used).toBe('claude-haiku-4.5');
+    });
+  });
+
+  // -- Dual geocoding confidence --
+
+  describe('Dual geocoding confidence scoring', () => {
+    it('should assign high confidence when Google and Nominatim agree (<10km)', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'Big Ben',
+            description: 'Famous clock tower in London',
+            raw_mention: 'Big Ben',
+          },
+        ],
+        model_used: 'gemini-2.0-flash',
+      });
+      mockGeocodeWithGoogle.mockResolvedValue({ lat: 51.5007, lon: -0.1246 });
+      mockGeocodeWithNominatim.mockResolvedValue({
+        lat: 51.5008,
+        lon: -0.1245,
+      });
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'Visit Big Ben in London' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
       const response = await POST(request);
       const data = await response.json();
 
       expect(data.locations[0].confidence).toBe('high');
+      expect(data.locations[0].sources).toContain('google');
+      expect(data.locations[0].sources).toContain('nominatim');
     });
 
-    it('should assign "medium" confidence to less specific locations', async () => {
-      const request = new NextRequest('http://localhost:3000/api/extract', {
-        method: 'POST',
-        body: JSON.stringify({ text: 'Somewhere in Bavaria' }),
-        headers: { 'Content-Type': 'application/json' }
+    it('should assign medium confidence when services disagree (>10km)', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'Springfield',
+            description: 'A common US city name',
+            raw_mention: 'Springfield',
+          },
+        ],
+        model_used: 'gemini-2.0-flash',
+      });
+      // Google: Springfield IL, Nominatim: Springfield MA (~1000km apart)
+      mockGeocodeWithGoogle.mockResolvedValue({ lat: 39.7817, lon: -89.6501 });
+      mockGeocodeWithNominatim.mockResolvedValue({
+        lat: 42.1015,
+        lon: -72.5898,
       });
 
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'Visit Springfield' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
       const response = await POST(request);
       const data = await response.json();
 
-      if (data.locations.length > 0) {
-        expect(['medium', 'low']).toContain(data.locations[0].confidence);
-      }
+      expect(data.locations[0].confidence).toBe('medium');
+      // Should prefer Google result when disagreeing
+      expect(data.locations[0].latitude).toBeCloseTo(39.7817, 1);
+    });
+
+    it('should assign medium confidence when only Google succeeds', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'Obscure Place',
+            description: 'A small village',
+            raw_mention: 'Obscure Place',
+          },
+        ],
+        model_used: 'gemini-2.0-flash',
+      });
+      mockGeocodeWithGoogle.mockResolvedValue({ lat: 40.0, lon: -74.0 });
+      mockGeocodeWithNominatim.mockResolvedValue(null);
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'Visit Obscure Place' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(data.locations[0].confidence).toBe('medium');
+      expect(data.locations[0].sources).toContain('google');
+      expect(data.locations[0].sources).not.toContain('nominatim');
+    });
+
+    it('should assign low confidence when both geocoding services fail', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'FakePlace123',
+            description: 'Non-existent location',
+            raw_mention: 'FakePlace123',
+            llm_lat: 10,
+            llm_lon: 20,
+          },
+        ],
+        model_used: 'gemini-2.0-flash',
+      });
+      mockGeocodeWithGoogle.mockResolvedValue(null);
+      mockGeocodeWithNominatim.mockResolvedValue(null);
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'Visit FakePlace123' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(data.locations[0].confidence).toBe('low');
+    });
+  });
+
+  // -- Multiple locations --
+
+  describe('Multiple locations', () => {
+    it('should extract and geocode multiple locations in parallel', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'Paris',
+            description: 'Capital of France',
+            raw_mention: 'Paris',
+          },
+          {
+            name: 'London',
+            description: 'Capital of England',
+            raw_mention: 'London',
+          },
+        ],
+        model_used: 'gemini-2.0-flash',
+      });
+      // Google and Nominatim agree for both cities
+      mockGeocodeWithGoogle
+        .mockResolvedValueOnce({ lat: 48.8566, lon: 2.3522 })
+        .mockResolvedValueOnce({ lat: 51.5074, lon: -0.1278 });
+      mockGeocodeWithNominatim
+        .mockResolvedValueOnce({ lat: 48.8567, lon: 2.3523 })
+        .mockResolvedValueOnce({ lat: 51.5075, lon: -0.1277 });
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'Travel from Paris to London' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(data.locations).toHaveLength(2);
+      expect(data.locations[0].confidence).toBe('high');
+      expect(data.locations[1].confidence).toBe('high');
+    });
+  });
+
+  // -- Deduplication --
+
+  describe('Deduplication', () => {
+    it('should merge duplicate locations by name (case-insensitive)', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'Paris',
+            description: 'Capital of France',
+            raw_mention: 'Paris',
+          },
+          {
+            name: 'paris',
+            description: 'City of Lights',
+            raw_mention: 'paris',
+          },
+        ],
+        model_used: 'gemini-2.0-flash',
+      });
+      mockGeocodeWithGoogle.mockResolvedValue({ lat: 48.8566, lon: 2.3522 });
+      mockGeocodeWithNominatim.mockResolvedValue({
+        lat: 48.8567,
+        lon: 2.3523,
+      });
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'Visit Paris, the beautiful paris' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(data.locations).toHaveLength(1);
+      expect(data.locations[0].raw_mentions).toHaveLength(2);
+    });
+  });
+
+  // -- Response format --
+
+  describe('Response format', () => {
+    it('should return correct response structure with model_used', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [
+          {
+            name: 'Rome',
+            description: 'Capital of Italy',
+            raw_mention: 'Rome',
+          },
+        ],
+        model_used: 'gemini-2.0-flash',
+      });
+      mockGeocodeWithGoogle.mockResolvedValue({ lat: 41.9028, lon: 12.4964 });
+      mockGeocodeWithNominatim.mockResolvedValue({
+        lat: 41.9029,
+        lon: 12.4965,
+      });
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'Visit Rome' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toHaveProperty('success', true);
+      expect(data).toHaveProperty('locations');
+      expect(data).toHaveProperty('input_length');
+      expect(data).toHaveProperty('processing_time_ms');
+      expect(data).toHaveProperty('model_used', 'gemini-2.0-flash');
+
+      const loc = data.locations[0];
+      expect(loc).toHaveProperty('name');
+      expect(loc).toHaveProperty('description');
+      expect(loc).toHaveProperty('latitude');
+      expect(loc).toHaveProperty('longitude');
+      expect(loc).toHaveProperty('confidence');
+      expect(loc).toHaveProperty('sources');
+      expect(loc).toHaveProperty('raw_mentions');
+      expect(['high', 'medium', 'low']).toContain(loc.confidence);
+      expect(typeof loc.latitude).toBe('number');
+      expect(typeof loc.longitude).toBe('number');
+    });
+
+    it('should include processing time', async () => {
+      mockExtractLocationsWithLLM.mockResolvedValue({
+        locations: [],
+        model_used: 'gemini-2.0-flash',
+      });
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/extract-locations',
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: 'no locations here' }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(data.processing_time_ms).toBeGreaterThanOrEqual(0);
     });
   });
 });
