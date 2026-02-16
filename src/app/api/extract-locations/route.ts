@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { validateApiKey } from '@/lib/api-keys';
+import { recordUsage } from '@/lib/db';
 
 // Types
 export interface ExtractedLocation {
@@ -203,6 +205,27 @@ export async function POST(request: NextRequest) {
   const startTime = Date.now();
 
   try {
+    // Step 1: Validate API key (if provided)
+    const apiKey = request.headers.get('X-API-Key');
+    let userId: number | null = null;
+
+    if (apiKey) {
+      userId = await validateApiKey(apiKey);
+      if (!userId) {
+        return NextResponse.json(
+          {
+            success: false,
+            locations: [],
+            input_length: 0,
+            processing_time_ms: Date.now() - startTime,
+            error: 'Invalid or revoked API key',
+          } as ExtractionResponse,
+          { status: 401 }
+        );
+      }
+    }
+
+    // Step 2: Parse request body
     const body = await request.json();
     const { text } = body;
 
@@ -279,6 +302,13 @@ export async function POST(request: NextRequest) {
       }
       return acc;
     }, [] as ExtractedLocation[]);
+
+    // Record usage (fire-and-forget)
+    if (userId) {
+      recordUsage(userId, null, '/api/extract-locations').catch((e) =>
+        console.error('Failed to record usage:', e)
+      );
+    }
 
     return NextResponse.json({
       success: true,
