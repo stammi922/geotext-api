@@ -23,10 +23,22 @@ interface NewKeyResponse {
   };
 }
 
+interface Analytics {
+  total_requests: number;
+  requests_this_month: number;
+  active_keys: number;
+  plan: string;
+  plan_limit: number;
+  usage_percentage: number;
+  daily_requests: Array<{ date: string; requests: number }>;
+  top_endpoints: Array<{ endpoint: string; requests: number }>;
+}
+
 export default function DashboardPage() {
   const { user, isLoaded } = useUser();
   const router = useRouter();
   const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [showNewKeyModal, setShowNewKeyModal] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -42,26 +54,35 @@ export default function DashboardPage() {
     }
   }, [isLoaded, user, router]);
 
-  // Fetch API keys
+  // Fetch API keys and analytics
   useEffect(() => {
-    const fetchKeys = async () => {
+    const fetchData = async () => {
       try {
-        const res = await fetch('/api/keys');
-        if (res.ok) {
-          const data = await res.json();
+        const [keysRes, analyticsRes] = await Promise.all([
+          fetch('/api/keys'),
+          fetch('/api/analytics'),
+        ]);
+
+        if (keysRes.ok) {
+          const data = await keysRes.json();
           setKeys(data.keys || []);
-        } else if (res.status === 401) {
+        } else if (keysRes.status === 401) {
           router.push('/sign-in');
         }
+
+        if (analyticsRes.ok) {
+          const data = await analyticsRes.json();
+          setAnalytics(data);
+        }
       } catch (error) {
-        console.error('Failed to fetch keys:', error);
+        console.error('Failed to fetch data:', error);
       } finally {
         setLoading(false);
       }
     };
 
     if (user) {
-      fetchKeys();
+      fetchData();
     }
   }, [user, router]);
 
@@ -302,15 +323,40 @@ export default function DashboardPage() {
           <h2 className="text-xl font-semibold text-slate-900 mb-6">Usage Stats</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="text-center">
-              <div className="text-3xl font-bold text-blue-600">0</div>
+              <div className="text-3xl font-bold text-blue-600">
+                {analytics?.requests_this_month || 0}
+              </div>
               <p className="text-slate-600">Requests This Month</p>
+              {analytics && (
+                <p className="text-sm text-slate-500 mt-2">
+                  {analytics.usage_percentage}% of {analytics.plan_limit.toLocaleString()} limit
+                </p>
+              )}
+              {analytics && (
+                <div className="mt-2 w-full bg-slate-200 rounded-full h-2">
+                  <div
+                    className={`h-2 rounded-full transition-all ${
+                      analytics.usage_percentage > 80
+                        ? 'bg-red-600'
+                        : analytics.usage_percentage > 50
+                          ? 'bg-yellow-600'
+                          : 'bg-green-600'
+                    }`}
+                    style={{ width: `${Math.min(analytics.usage_percentage, 100)}%` }}
+                  ></div>
+                </div>
+              )}
             </div>
             <div className="text-center">
-              <div className="text-3xl font-bold text-blue-600">0</div>
+              <div className="text-3xl font-bold text-blue-600">
+                {analytics?.active_keys || 0}
+              </div>
               <p className="text-slate-600">Active Keys</p>
             </div>
             <div className="text-center">
-              <div className="text-3xl font-bold text-green-600">Free</div>
+              <div className="text-3xl font-bold text-green-600">
+                {analytics?.plan || 'Free'}
+              </div>
               <p className="text-slate-600">Current Plan</p>
             </div>
           </div>
