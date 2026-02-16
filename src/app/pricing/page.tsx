@@ -1,6 +1,47 @@
+'use client';
+
 import { Check } from 'lucide-react';
+import { useUser } from '@clerk/nextjs';
+import { useState } from 'react';
 
 export default function PricingPage() {
+  const { user } = useUser();
+  const [loading, setLoading] = useState<string | null>(null);
+
+  const handleCheckout = async (plan: 'starter' | 'pro') => {
+    if (!user?.emailAddresses[0]?.emailAddress) {
+      // Redirect to sign in
+      window.location.href = '/sign-in';
+      return;
+    }
+
+    setLoading(plan);
+    try {
+      const res = await fetch('/api/stripe/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          plan,
+          email: user.emailAddresses[0].emailAddress,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.url) {
+          window.location.href = data.url;
+        }
+      } else {
+        alert('Failed to create checkout session');
+      }
+    } catch (error) {
+      console.error('Checkout error:', error);
+      alert('Failed to create checkout session');
+    } finally {
+      setLoading(null);
+    }
+  };
+
   const plans = [
     {
       name: 'Free',
@@ -93,15 +134,30 @@ export default function PricingPage() {
                 <p className="font-semibold text-slate-900">{plan.requests}</p>
               </div>
 
-              <button
-                className={`w-full px-4 py-3 rounded-lg font-semibold transition mb-8 ${
-                  plan.highlighted
-                    ? 'bg-blue-600 text-white hover:bg-blue-700'
-                    : 'bg-slate-100 text-slate-900 hover:bg-slate-200'
-                }`}
-              >
-                {plan.cta}
-              </button>
+              {plan.name === 'Free' ? (
+                <button
+                  onClick={() => (window.location.href = '/sign-in')}
+                  className={`w-full px-4 py-3 rounded-lg font-semibold transition mb-8 ${
+                    plan.highlighted
+                      ? 'bg-blue-600 text-white hover:bg-blue-700'
+                      : 'bg-slate-100 text-slate-900 hover:bg-slate-200'
+                  }`}
+                >
+                  Get Started
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleCheckout(plan.name.toLowerCase() as 'starter' | 'pro')}
+                  disabled={loading === plan.name.toLowerCase()}
+                  className={`w-full px-4 py-3 rounded-lg font-semibold transition mb-8 ${
+                    plan.highlighted
+                      ? 'bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400'
+                      : 'bg-slate-100 text-slate-900 hover:bg-slate-200 disabled:bg-slate-50'
+                  }`}
+                >
+                  {loading === plan.name.toLowerCase() ? 'Loading...' : plan.cta}
+                </button>
+              )}
 
               <div className="space-y-3 flex-1">
                 {plan.features.map((feature) => (
