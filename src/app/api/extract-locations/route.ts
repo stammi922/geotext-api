@@ -34,7 +34,7 @@ async function geocodeWithNominatim(query: string): Promise<{ lat: number; lon: 
       `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
       {
         headers: {
-          'User-Agent': 'GeoText-API/1.0 (https://github.com/geotext-api)',
+          'User-Agent': 'TextoGeo/1.0 (https://textogeo.com)',
         },
       }
     );
@@ -334,7 +334,7 @@ export async function POST(request: NextRequest) {
 // GET endpoint for health check and API info
 export async function GET() {
   return NextResponse.json({
-    name: 'GeoText API',
+    name: 'TextoGeo API',
     version: '1.0.0',
     description: 'Extract and geocode locations from text using AI + multi-source verification',
     endpoints: {

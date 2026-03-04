@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GeoText API",
-  description: "AI-powered location extraction API",
+  title: "TextoGeo - Extract Locations from Text",
+  description: "AI-powered location extraction and geocoding API. Turn unstructured text into structured location data with accurate coordinates.",
 };
 
 export default function RootLayout({

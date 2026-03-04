@@ -5,7 +5,7 @@ export default function DocsPage() {
       <div className="bg-white border-b border-slate-200">
         <div className="max-w-4xl mx-auto px-6 py-8">
           <h1 className="text-4xl font-bold text-slate-900">API Documentation</h1>
-          <p className="mt-2 text-slate-600">Complete guide to the GeoText API</p>
+          <p className="mt-2 text-slate-600">Complete guide to the TextoGeo API</p>
         </div>
       </div>
 
@@ -23,8 +23,8 @@ export default function DocsPage() {
             </p>
 
             <div className="bg-slate-900 text-slate-100 p-4 rounded font-mono text-sm overflow-x-auto">
-              <pre>{`curl https://api.geotext.dev/api/extract-locations \\
-  -H "X-API-Key: geotext_live_..." \\
+              <pre>{`curl https://textogeo.com/api/extract-locations \\
+  -H "X-API-Key: textogeo_live_..." \\
   -H "Content-Type: application/json" \\
   -d '{"text": "Meeting in Paris and London next week"}'`}</pre>
             </div>

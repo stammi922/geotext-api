@@ -1,4 +1,4 @@
-# 🌍 GeoText API
+# 📍 TextoGeo
 
 **Extract and geocode locations from any text using AI + multi-source verification.**
 
@@ -15,14 +15,14 @@ Turn unstructured text into structured location data with accurate coordinates. 
 
 ### Deploy to Vercel (Recommended)
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/stammi922/geotext-api&env=ANTHROPIC_API_KEY,GOOGLE_MAPS_API_KEY&envDescription=API%20keys%20for%20location%20extraction%20and%20geocoding)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/stammi922/textogeo-api&env=ANTHROPIC_API_KEY,GOOGLE_MAPS_API_KEY&envDescription=API%20keys%20for%20location%20extraction%20and%20geocoding)
 
 ### Local Development
 
 ```bash
 # Clone the repo
-git clone https://github.com/stammi922/geotext-api.git
-cd geotext-api
+git clone https://github.com/stammi922/textogeo-api.git
+cd textogeo-api
 
 # Install dependencies
 npm install
